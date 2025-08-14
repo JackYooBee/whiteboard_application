@@ -15,12 +15,28 @@ function App() {
     const [showTextInput, setShowTextInput] = useState(false);
     const [textInputPos, setTextInputPos] = useState({ top: 0, left: 0, width: 0, height: 0 });
     const [fontSize, setFontSize] = useState(16);
-    const [selectedObjectIndices, setSelectedObjectIndices] = useState([]); // Array of selected indices
+    const [selectedObjectIndices, setSelectedObjectIndices] = useState([]);
     const [showFontSizeInput, setShowFontSizeInput] = useState(false);
     const [fontSizeInputPos, setFontSizeInputPos] = useState({ top: 0, left: 0 });
     const dragOffset = useRef({ x: 0, y: 0 });
     const currentStroke = useRef([]);
     const [ctrlPressed, setCtrlPressed] = useState(false);
+
+    // Color palette state
+    const [selectedColor, setSelectedColor] = useState('#222'); // Default: Black
+    const colorPalette = [
+        { name: 'Black', value: '#222' },
+        { name: 'Red', value: '#e53935' },
+        { name: 'Blue', value: '#1976d2' },
+        { name: 'Green', value: '#43a047' },
+        { name: 'Yellow', value: '#fbc02d' },
+        { name: 'Purple', value: '#8e24aa' },
+        { name: 'Pink', value: '#d81b60' },
+        { name: 'Grey', value: '#757575' }
+    ];
+
+    // Thickness state
+    const [thickness, setThickness] = useState(5);
 
     // Redraw all objects and current stroke if drawing or placing shape/text
     const redrawObjects = useCallback(() => {
@@ -33,21 +49,27 @@ function App() {
         drawnObjects.forEach((obj, idx) => {
             context.save();
             const isSelected = selectedObjectIndices.includes(idx);
+            let color = '#222';
+            let lineWidth = thickness;
+            if (obj.type === 'draw' || obj.type === 'rect' || obj.type === 'circle' || obj.type === 'triangle' || obj.type === 'line') {
+                color = obj.color || selectedColor;
+                lineWidth = obj.thickness || thickness;
+            }
             if (obj.type === 'rect') {
-                context.strokeStyle = isSelected ? '#1976d2' : 'black';
-                context.lineWidth = 3;
+                context.strokeStyle = isSelected ? '#1976d2' : color;
+                context.lineWidth = lineWidth;
                 context.strokeRect(obj.x, obj.y, obj.width, obj.height);
             }
             if (obj.type === 'circle') {
-                context.strokeStyle = isSelected ? '#1976d2' : 'black';
-                context.lineWidth = 3;
+                context.strokeStyle = isSelected ? '#1976d2' : color;
+                context.lineWidth = lineWidth;
                 context.beginPath();
                 context.arc(obj.x, obj.y, obj.radius, 0, 2 * Math.PI);
                 context.stroke();
             }
             if (obj.type === 'triangle') {
-                context.strokeStyle = isSelected ? '#1976d2' : 'black';
-                context.lineWidth = 3;
+                context.strokeStyle = isSelected ? '#1976d2' : color;
+                context.lineWidth = lineWidth;
                 context.beginPath();
                 context.moveTo(obj.x, obj.y - obj.size);
                 context.lineTo(obj.x - obj.size, obj.y + obj.size);
@@ -56,16 +78,16 @@ function App() {
                 context.stroke();
             }
             if (obj.type === 'line') {
-                context.strokeStyle = isSelected ? '#1976d2' : 'black';
-                context.lineWidth = 3;
+                context.strokeStyle = isSelected ? '#1976d2' : color;
+                context.lineWidth = lineWidth;
                 context.beginPath();
                 context.moveTo(obj.x1, obj.y1);
                 context.lineTo(obj.x2, obj.y2);
                 context.stroke();
             }
             if (obj.type === 'draw') {
-                context.strokeStyle = 'black';
-                context.lineWidth = 5;
+                context.strokeStyle = color;
+                context.lineWidth = lineWidth;
                 context.beginPath();
                 obj.points.forEach((pt, i) => {
                     if (i === 0) {
@@ -107,8 +129,8 @@ function App() {
         // Draw current stroke in progress
         if (isDrawingRef.current && currentStroke.current.length > 0) {
             context.save();
-            context.strokeStyle = 'black';
-            context.lineWidth = 5;
+            context.strokeStyle = selectedColor;
+            context.lineWidth = thickness;
             context.beginPath();
             currentStroke.current.forEach((pt, i) => {
                 if (i === 0) {
@@ -124,8 +146,8 @@ function App() {
         // Draw shape being placed
         if (placingShape) {
             context.save();
-            context.strokeStyle = '#1976d2';
-            context.lineWidth = 3;
+            context.strokeStyle = selectedColor;
+            context.lineWidth = thickness;
             const { type, anchor, current } = placingShape;
             if (type === 'rect') {
                 const width = current.x - anchor.x;
@@ -164,7 +186,7 @@ function App() {
             context.strokeRect(anchor.x, anchor.y, width, height);
             context.restore();
         }
-    }, [drawnObjects, placingShape, placingText, selectedObjectIndices]);
+    }, [drawnObjects, placingShape, placingText, selectedObjectIndices, selectedColor, thickness]);
 
     // White canvas that fills window
     const resizeCanvas = useCallback(() => {
@@ -213,12 +235,12 @@ function App() {
         if (currentStroke.current.length > 1) {
             setDrawnObjects(prev => [
                 ...prev,
-                { type: 'draw', points: [...currentStroke.current] }
+                { type: 'draw', points: [...currentStroke.current], color: selectedColor, thickness }
             ]);
         }
         currentStroke.current = [];
         redrawObjects();
-    }, [activeTool, redrawObjects]);
+    }, [activeTool, redrawObjects, selectedColor, thickness]);
 
     // Shapes tool logic
     const handleShapeMouseDown = useCallback((e) => {
@@ -249,14 +271,18 @@ function App() {
                 x: anchor.x,
                 y: anchor.y,
                 width: x - anchor.x,
-                height: y - anchor.y
+                height: y - anchor.y,
+                color: selectedColor,
+                thickness
             };
         } else if (type === 'circle') {
             newShape = {
                 type: 'circle',
                 x: anchor.x,
                 y: anchor.y,
-                radius: Math.hypot(x - anchor.x, y - anchor.y)
+                radius: Math.hypot(x - anchor.x, y - anchor.y),
+                color: selectedColor,
+                thickness
             };
         } else if (type === 'triangle') {
             const size = Math.max(Math.abs(x - anchor.x), Math.abs(y - anchor.y));
@@ -264,7 +290,9 @@ function App() {
                 type: 'triangle',
                 x: anchor.x,
                 y: anchor.y,
-                size
+                size,
+                color: selectedColor,
+                thickness
             };
         } else if (type === 'line') {
             newShape = {
@@ -272,14 +300,16 @@ function App() {
                 x1: anchor.x,
                 y1: anchor.y,
                 x2: x,
-                y2: y
+                y2: y,
+                color: selectedColor,
+                thickness
             };
         }
         if (newShape) {
             setDrawnObjects(prev => [...prev, newShape]);
         }
         setPlacingShape(null);
-    }, [activeTool, placingShape]);
+    }, [activeTool, placingShape, selectedColor, thickness]);
 
     // Text tool logic
     const handleTextMouseDown = useCallback((e) => {
@@ -500,7 +530,7 @@ function App() {
                 if (obj.type === 'line') {
                     return !(
                         Math.abs((obj.y2 - obj.y1) * x - (obj.x2 - obj.x1) * y + obj.x2 * obj.y1 - obj.y2 * obj.x1) /
-                        Math.hypot(obj.x2 - obj.x1, obj.y2 - obj.y1) < 10 &&
+// Math.hypot(obj.x2 - obj.x1, obj.y2 - obj.y1) < 10 &&
                         x >= Math.min(obj.x1, obj.x2) - 10 && x <= Math.max(obj.x1, obj.x2) + 10 &&
                         y >= Math.min(obj.y1, obj.y2) - 10 && y <= Math.max(obj.y1, obj.y2) + 10
                     );
@@ -683,7 +713,7 @@ function App() {
 
     return (
         <div>
-            {/* Tools Panel */}
+            {/* Panel Layout: 3 vertical sections */}
             <div
                 style={{
                     position: 'fixed',
@@ -698,6 +728,7 @@ function App() {
                     flexDirection: 'column',
                 }}
             >
+                {/* Tools Section (50%) */}
                 <div style={{
                     padding: '24px 16px 16px 16px',
                     borderBottom: '1px solid #e0e0e0',
@@ -821,8 +852,98 @@ function App() {
                         </div>
                     )}
                 </div>
-                {/* Space for future development */}
-                <div style={{ flex: 1 }}></div>
+                {/* Colors Section (25%) */}
+                <div style={{
+                    padding: '24px 16px 16px 16px',
+                    borderBottom: '1px solid #e0e0e0',
+                    height: '25%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start'
+                }}>
+                    <h3 style={{
+                        margin: '0 0 12px 0',
+                        fontSize: '1.1rem',
+                        fontWeight: 'bold',
+                        color: '#222'
+                    }}>Colors</h3>
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(4, 36px)',
+                        gridTemplateRows: 'repeat(2, 36px)',
+                        gap: '12px'
+                    }}>
+                        {colorPalette.map(color => (
+                            <button
+                                key={color.name}
+                                aria-label={color.name}
+                                onClick={() => setSelectedColor(color.value)}
+                                style={{
+                                    width: 36,
+                                    height: 36,
+                                    background: color.value,
+                                    border: selectedColor === color.value ? '3px solid #1976d2' : '2px solid #ccc',
+                                    borderRadius: '8px',
+                                    cursor: 'pointer',
+                                    outline: 'none',
+                                    boxShadow: selectedColor === color.value
+                                        ? '0 2px 8px rgba(25,118,210,0.18)'
+                                        : 'none',
+                                    transition: 'border 0.2s, box-shadow 0.2s'
+                                }}
+                            />
+                        ))}
+                    </div>
+                </div>
+                {/* Thickness Section (25%) */}
+                <div style={{
+                    padding: '24px 16px 16px 16px',
+                    height: '25%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    justifyContent: 'flex-start'
+                }}>
+                    <h3 style={{
+                        margin: '0 0 12px 0',
+                        fontSize: '1.1rem',
+                        fontWeight: 'bold',
+                        color: '#222'
+                    }}>Thickness</h3>
+                    <div style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px'
+                    }}>
+                        <input
+                            type="range"
+                            min={1}
+                            max={24}
+                            value={thickness}
+                            onChange={e => setThickness(Number(e.target.value))}
+                            style={{
+                                flex: 1,
+                                accentColor: '#1976d2'
+                            }}
+                        />
+                        <span style={{
+                            fontWeight: 'bold',
+                            fontSize: '1rem',
+                            minWidth: 32,
+                            textAlign: 'center'
+                        }}>{thickness}px</span>
+                    </div>
+                    <div style={{
+                        marginTop: 8,
+                        fontSize: '0.95rem',
+                        color: '#555'
+                    }}>
+                        Applies to Draw tool and shape outlines.
+                    </div>
+                </div>
             </div>
             {/* Canvas */}
             <canvas
