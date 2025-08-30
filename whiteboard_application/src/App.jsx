@@ -1,4 +1,8 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from "react";
+import { io } from "socket.io-client";
+import { MessageCircle } from "lucide-react";
+
+const socket = io("http://localhost:4000");
 
 function App() {
     const canvasRef = useRef(null);
@@ -51,15 +55,18 @@ function App() {
             const isSelected = selectedObjectIndices.includes(idx);
             let color = '#222';
             let lineWidth = thickness;
+
             if (obj.type === 'draw' || obj.type === 'rect' || obj.type === 'circle' || obj.type === 'triangle' || obj.type === 'line') {
                 color = obj.color || selectedColor;
                 lineWidth = obj.thickness || thickness;
             }
+
             if (obj.type === 'rect') {
                 context.strokeStyle = isSelected ? '#1976d2' : color;
                 context.lineWidth = lineWidth;
                 context.strokeRect(obj.x, obj.y, obj.width, obj.height);
             }
+
             if (obj.type === 'circle') {
                 context.strokeStyle = isSelected ? '#1976d2' : color;
                 context.lineWidth = lineWidth;
@@ -67,6 +74,7 @@ function App() {
                 context.arc(obj.x, obj.y, obj.radius, 0, 2 * Math.PI);
                 context.stroke();
             }
+
             if (obj.type === 'triangle') {
                 context.strokeStyle = isSelected ? '#1976d2' : color;
                 context.lineWidth = lineWidth;
@@ -77,6 +85,7 @@ function App() {
                 context.closePath();
                 context.stroke();
             }
+
             if (obj.type === 'line') {
                 context.strokeStyle = isSelected ? '#1976d2' : color;
                 context.lineWidth = lineWidth;
@@ -85,19 +94,16 @@ function App() {
                 context.lineTo(obj.x2, obj.y2);
                 context.stroke();
             }
-            if (obj.type === 'draw') {
-                context.strokeStyle = color;
-                context.lineWidth = lineWidth;
+
+            // Updated draw handling
+            if (obj.type === 'draw' && obj.points && obj.points.length > 0) {
+                context.strokeStyle = obj.color || selectedColor;
+                context.lineWidth = obj.thickness || thickness;
                 context.beginPath();
-                obj.points.forEach((pt, i) => {
-                    if (i === 0) {
-                        context.moveTo(pt.x, pt.y);
-                    } else {
-                        context.lineTo(pt.x, pt.y);
-                    }
-                });
+                obj.points.forEach((pt, i) => i === 0 ? context.moveTo(pt.x, pt.y) : context.lineTo(pt.x, pt.y));
                 context.stroke();
             }
+
             if (obj.type === 'text') {
                 context.strokeStyle = isSelected ? '#1976d2' : '#222';
                 context.lineWidth = 2;
@@ -123,6 +129,7 @@ function App() {
                 }
                 context.fillText(line, obj.x + 4, y);
             }
+
             context.restore();
         });
 
@@ -219,28 +226,34 @@ function App() {
         currentStroke.current = [];
         const { x, y } = getCoordinates(e);
         currentStroke.current.push({ x, y });
-        redrawObjects();
+        redrawObjects(); // preview start
     }, [activeTool, redrawObjects]);
 
     const draw = useCallback((e) => {
         if (!isDrawingRef.current || activeTool !== 'Draw') return;
         const { x, y } = getCoordinates(e);
         currentStroke.current.push({ x, y });
-        redrawObjects();
+        redrawObjects(); // draw in-progress stroke
     }, [activeTool, redrawObjects]);
 
     const stopDrawing = useCallback(() => {
         if (!isDrawingRef.current || activeTool !== 'Draw') return;
         isDrawingRef.current = false;
+
         if (currentStroke.current.length > 1) {
-            setDrawnObjects(prev => [
-                ...prev,
-                { type: 'draw', points: [...currentStroke.current], color: selectedColor, thickness }
-            ]);
+            // Save current stroke
+            const finishedStroke = {
+                type: 'draw',
+                points: [...currentStroke.current],
+                color: selectedColor,
+                thickness
+            };
+            setDrawnObjects(prev => [...prev, finishedStroke]);
         }
+
+        // Clear current stroke after saving
         currentStroke.current = [];
-        redrawObjects();
-    }, [activeTool, redrawObjects, selectedColor, thickness]);
+    }, [activeTool, selectedColor, thickness]);
 
     // Shapes tool logic
     const handleShapeMouseDown = useCallback((e) => {
@@ -381,23 +394,47 @@ function App() {
     const handleSelectMouseDown = useCallback((e) => {
         if (activeTool !== 'Select') return;
         const { x, y } = getCoordinates(e);
+
+        // Draw tool 
+        const strokeSelectRadius = 10;
+        const idxDraw = drawnObjects.findIndex(obj =>
+            obj.type === 'draw' &&
+            obj.points.some((pt, i, arr) => {
+                if (i === 0) return false;
+                const prev = arr[i - 1];
+                const dx = pt.x - prev.x;
+                const dy = pt.y - prev.y;
+                const length = Math.hypot(dx, dy);
+                if (length === 0) return false;
+                let t = ((x - prev.x) * dx + (y - prev.y) * dy) / (length * length);
+                t = Math.max(0, Math.min(1, t)); // clamp t to [0,1]
+                const nearestX = prev.x + t * dx;
+                const nearestY = prev.y + t * dy;
+                const dist = Math.hypot(nearestX - x, nearestY - y);
+                return dist <= strokeSelectRadius;
+            })
+        );
+
         // Rectangle
         const idxRect = drawnObjects.findIndex(obj =>
             obj.type === 'rect' &&
             x >= obj.x && x <= obj.x + obj.width &&
             y >= obj.y && y <= obj.y + obj.height
         );
+
         // Circle
         const idxCircle = drawnObjects.findIndex(obj =>
             obj.type === 'circle' &&
             Math.hypot(obj.x - x, obj.y - y) <= obj.radius
         );
+
         // Triangle (simple bounding box for now)
         const idxTriangle = drawnObjects.findIndex(obj =>
             obj.type === 'triangle' &&
             x >= obj.x - obj.size && x <= obj.x + obj.size &&
             y >= obj.y - obj.size && y <= obj.y + obj.size
         );
+
         // Line (distance to line segment)
         const idxLine = drawnObjects.findIndex(obj =>
             obj.type === 'line' &&
@@ -406,14 +443,24 @@ function App() {
             x >= Math.min(obj.x1, obj.x2) - 10 && x <= Math.max(obj.x1, obj.x2) + 10 &&
             y >= Math.min(obj.y1, obj.y2) - 10 && y <= Math.max(obj.y1, obj.y2) + 10
         );
+
         // Text
         const idxText = drawnObjects.findIndex(obj =>
             obj.type === 'text' &&
             x >= obj.x && x <= obj.x + obj.width &&
             y >= obj.y && y <= obj.y + obj.height
         );
-        let idx = idxRect !== -1 ? idxRect : idxCircle !== -1 ? idxCircle : idxTriangle !== -1 ? idxTriangle : idxLine !== -1 ? idxLine : idxText !== -1 ? idxText : -1;
+
+        let idx = idxDraw !== -1 ? idxDraw
+            : idxRect !== -1 ? idxRect
+                : idxCircle !== -1 ? idxCircle
+                    : idxTriangle !== -1 ? idxTriangle
+                        : idxLine !== -1 ? idxLine
+                            : idxText !== -1 ? idxText
+                                : -1;
+
         if (idx !== -1) {
+
             if (ctrlPressed) {
                 setSelectedObjectIndices(prev => prev.includes(idx) ? prev : [...prev, idx]);
             } else {
@@ -423,10 +470,21 @@ function App() {
             let offset = { x: 0, y: 0 };
             if (obj.type === 'rect' || obj.type === 'circle' || obj.type === 'triangle' || obj.type === 'text') {
                 offset = { x: x - obj.x, y: y - obj.y };
+                dragOffset.current = offset; // store offset for shapes/text
             } else if (obj.type === 'line') {
                 offset = { x: x - obj.x1, y: y - obj.y1 };
+                dragOffset.current = offset; // store offset for line
+            } else if (obj.type === 'draw') { // On mousedown when selecting a draw object:
+                dragOffset.current = {
+                    prevPoints: obj.points.map(pt => ({ ...pt })), // copy of original points
+                    startX: x,
+                    startY: y
+                };
             }
+
+
             dragOffset.current = offset;
+
             // Show font size input for text
             if (obj.type === 'text') {
                 setShowFontSizeInput(true);
@@ -444,12 +502,16 @@ function App() {
     const handleSelectMouseMove = useCallback((e) => {
         if (activeTool !== 'Select' || selectedObjectIndices.length === 0) return;
         if (e.buttons !== 1) return;
+
         const { x, y } = getCoordinates(e);
+
         setDrawnObjects(prev => {
             const updated = [...prev];
-            // Only move the last selected object for simplicity
             const idx = selectedObjectIndices[selectedObjectIndices.length - 1];
             const obj = updated[idx];
+
+            if (!obj) return updated;
+
             if (obj.type === 'rect' || obj.type === 'circle' || obj.type === 'triangle' || obj.type === 'text') {
                 updated[idx] = {
                     ...obj,
@@ -457,8 +519,8 @@ function App() {
                     y: y - dragOffset.current.y
                 };
             } else if (obj.type === 'line') {
-                const dx = x - dragOffset.current.x - obj.x1;
-                const dy = y - dragOffset.current.y - obj.y1;
+                const dx = x - dragOffset.current.x;
+                const dy = y - dragOffset.current.y;
                 updated[idx] = {
                     ...obj,
                     x1: obj.x1 + dx,
@@ -466,9 +528,23 @@ function App() {
                     x2: obj.x2 + dx,
                     y2: obj.y2 + dy
                 };
+                dragOffset.current.x = x;
+                dragOffset.current.y = y;
+            } else if (obj.type === 'draw') {
+                if (!dragOffset.current.prevPoints || dragOffset.current.prevPoints.length === 0) return updated;
+
+                const dx = x - dragOffset.current.x;
+                const dy = y - dragOffset.current.y;
+
+                updated[idx] = {
+                    ...obj,
+                    points: dragOffset.current.prevPoints.map(pt => ({ x: pt.x + dx, y: pt.y + dy }))
+                };
             }
+
             return updated;
         });
+
         // Move font size input bubble if text
         const idx = selectedObjectIndices[selectedObjectIndices.length - 1];
         if (drawnObjects[idx] && drawnObjects[idx].type === 'text') {
@@ -530,7 +606,7 @@ function App() {
                 if (obj.type === 'line') {
                     return !(
                         Math.abs((obj.y2 - obj.y1) * x - (obj.x2 - obj.x1) * y + obj.x2 * obj.y1 - obj.y2 * obj.x1) /
-// Math.hypot(obj.x2 - obj.x1, obj.y2 - obj.y1) < 10 &&
+                        Math.hypot(obj.x2 - obj.x1, obj.y2 - obj.y1) < 10 &&
                         x >= Math.min(obj.x1, obj.x2) - 10 && x <= Math.max(obj.x1, obj.x2) + 10 &&
                         y >= Math.min(obj.y1, obj.y2) - 10 && y <= Math.max(obj.y1, obj.y2) + 10
                     );
@@ -576,15 +652,6 @@ function App() {
             window.removeEventListener('keyup', handleKeyUp);
         };
     }, [activeTool, selectedObjectIndices]);
-
-    // Add a demo rectangle for testing selection
-    useEffect(() => {
-        if (drawnObjects.length === 0) {
-            setDrawnObjects([
-                { type: 'rect', x: 100, y: 100, width: 120, height: 80 }
-            ]);
-        }
-    }, []);
 
     // Redraw objects when changed or on resize
     useEffect(() => {
@@ -711,6 +778,40 @@ function App() {
         }
     }, [activeTool]);
 
+    // Handle image sharing
+    const handleShare = async () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const dataUrl = canvas.toDataURL("image/png");
+        const blob = await (await fetch(dataUrl)).blob();
+        const file = new File([blob], "whiteboard.png", { type: "image/png" });
+
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: "My Whiteboard",
+                    text: "Check out my drawing!",
+                    files: [file],
+                });
+            } catch (err) {
+                console.error("Error sharing:", err);
+            }
+        } else {
+            alert("Sharing is not supported on this browser.");
+        }
+    };
+
+    // Handle image saving
+    const handleSave = () => {
+        const canvas = canvasRef.current;
+        const link = document.createElement('a');
+        link.download = 'whiteboard.png'; // Default filename
+        link.href = canvas.toDataURL('image/png'); // Export canvas to PNG
+        link.click();
+    };
+
+    // Grid layout
     return (
         <div>
             {/* Panel Layout: 3 vertical sections */}
@@ -852,7 +953,7 @@ function App() {
                         </div>
                     )}
                 </div>
-                {/* Colors Section (25%) */}
+                {/* Colours Section */}
                 <div style={{
                     padding: '24px 16px 16px 16px',
                     borderBottom: '1px solid #e0e0e0',
@@ -896,7 +997,7 @@ function App() {
                         ))}
                     </div>
                 </div>
-                {/* Thickness Section (25%) */}
+                {/* Thickness Section */}
                 <div style={{
                     padding: '24px 16px 16px 16px',
                     height: '25%',
@@ -942,9 +1043,46 @@ function App() {
                         color: '#555'
                     }}>
                         Applies to Draw tool and shape outlines.
+
+                        <button /* Share button */
+                            onClick={handleShare}
+                            style={{
+                                marginTop: "8px",
+                                width: "100%",
+                                padding: "10px",
+                                background: "#2196f3",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: "8px",
+                                fontWeight: "bold",
+                                cursor: "pointer",
+                                fontSize: "1rem"
+                            }}
+                        >
+                            Share Whiteboard
+                        </button>
+
+                        <button /* Save button */
+                            onClick={handleSave}
+                            style={{
+                                marginTop: "16px",
+                                width: "100%",
+                                padding: "10px",
+                                background: "#4caf50",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: "8px",
+                                fontWeight: "bold",
+                                cursor: "pointer",
+                                fontSize: "1rem"
+                            }}
+                        >
+                            Save Whiteboard
+                        </button>
                     </div>
                 </div>
             </div>
+
             {/* Canvas */}
             <canvas
                 ref={canvasRef}
@@ -958,7 +1096,7 @@ function App() {
                     border: '1px solid black',
                     background: 'white',
                     touchAction: 'none',
-                    zIndex: 1,
+                    zIndex: 0,
                 }}
             />
             {/* Text input overlay */}
@@ -989,34 +1127,136 @@ function App() {
             {/* Font size input for selected text object */}
             {showFontSizeInput && lastSelectedTextIdx !== null && drawnObjects[lastSelectedTextIdx] &&
                 drawnObjects[lastSelectedTextIdx].type === 'text' && (
-                <div style={{
-                    position: 'fixed',
-                    top: fontSizeInputPos.top,
-                    left: fontSizeInputPos.left,
-                    background: '#fff',
-                    border: '1px solid #1976d2',
-                    borderRadius: '8px',
-                    boxShadow: '0 2px 8px rgba(25,118,210,0.12)',
-                    padding: '8px 12px',
-                    zIndex: 100,
-                    display: 'flex',
-                    alignItems: 'center'
-                }}>
-                    <span style={{ marginRight: 8, fontWeight: 'bold' }}>Font Size:</span>
-                    <input
-                        type="number"
-                        min="8"
-                        max="48"
-                        value={fontSize}
-                        onChange={handleFontSizeChange}
+                    <div style={{
+                        position: 'fixed',
+                        top: fontSizeInputPos.top,
+                        left: fontSizeInputPos.left,
+                        background: '#fff',
+                        border: '1px solid #1976d2',
+                        borderRadius: '8px',
+                        boxShadow: '0 2px 8px rgba(25,118,210,0.12)',
+                        padding: '8px 12px',
+                        zIndex: 100,
+                        display: 'flex',
+                        alignItems: 'center'
+                    }}>
+                        <span style={{ marginRight: 8, fontWeight: 'bold' }}>Font Size:</span>
+                        <input
+                            type="number"
+                            min="8"
+                            max="48"
+                            value={fontSize}
+                            onChange={handleFontSizeChange}
+                            style={{
+                                width: 60,
+                                padding: '4px 8px',
+                                borderRadius: '4px',
+                                border: '1px solid #ccc',
+                                fontSize: '1rem'
+                            }}
+                        />
+                    </div>
+                )}
+
+            {/* Chat widget */}
+            <ChatWidget />
+        </div>
+
+
+    );
+}
+
+// Chat widget component
+function ChatWidget() {
+    const exampleUsers = [
+        { id: "user1", name: "Alice", avatar: "https://i.pravatar.cc/40?img=1" },
+        { id: "user2", name: "Karlos", avatar: "https://i.pravatar.cc/40?img=2" },
+        { id: "user3", name: "Jack", avatar: "https://i.pravatar.cc/40?img=3" },
+        { id: "user4", name: "Dana", avatar: "https://i.pravatar.cc/40?img=4" },
+    ];
+
+    const [isOpen, setIsOpen] = useState(false);
+    const [messages, setMessages] = useState([]);
+    const [input, setInput] = useState("");
+    const [selectedUser, setSelectedUser] = useState(exampleUsers[0].id);
+
+    const sendMessage = () => {
+        if (!input.trim()) return;
+        const msg = { text: input, sender: "me", recipient: selectedUser };
+        setMessages(prev => [...prev, msg]);
+        setInput("");
+    };
+
+    const filteredMessages = messages.filter(msg => msg.recipient === selectedUser);
+
+    return (
+        <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 20000, display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+            {!isOpen && (
+                <button onClick={() => setIsOpen(true)} style={{ padding: 12, borderRadius: '15%', background: '#2563eb', color: '#fff' }}>
+                    Chat
+                </button>
+            )}
+
+            {isOpen && (
+                <div style={{ width: 320, height: 400, background: '#fff', borderRadius: 15, boxShadow: '0 4px 20px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <div style={{ background: '#2563eb', color: '#fff', padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <h2 style={{ margin: 0 }}>Chat</h2>
+                        <button onClick={() => setIsOpen(false)} style={{ fontWeight: 'bold' }}>X</button>
+                    </div>
+
+                    <div
                         style={{
-                            width: 60,
-                            padding: '4px 8px',
-                            borderRadius: '4px',
-                            border: '1px solid #ccc',
-                            fontSize: '1rem'
+                            display: 'flex',
+                            gap: 8,
+                            padding: 8,
+                            overflowX: 'auto',
+                            background: '#f3f4f6',
+                            borderBottom: '2px solid #2563eb',
+                            borderRadius: 8,
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: '#bfdbfe #f3f4f6',
                         }}
-                    />
+                        className="custom-scrollbar"
+                    >
+                        {exampleUsers.map(user => (
+                            <button
+                                key={user.id}
+                                onClick={() => setSelectedUser(user.id)}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    padding: '4px 8px',
+                                    borderRadius: 999,
+                                    border: selectedUser === user.id ? '2px solid #2563eb' : '1px solid #ccc',
+                                    background: selectedUser === user.id ? '#bfdbfe' : '#fff',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                <img
+                                    src={user.avatar}
+                                    alt={user.name}
+                                    style={{ width: 24, height: 24, borderRadius: '50%' }}
+                                />
+                                <span style={{ fontSize: 14, color: 'black', fontWeight: 500 }}>{user.name}</span>
+                            </button>
+                        ))}
+                    </div>
+
+                    <div style={{ flex: 1, padding: 8, overflowY: 'auto', background: '#f9fafb' }}>
+                        {filteredMessages.map((msg, i) => (
+                            <div key={i} style={{ marginBottom: 4, padding: 6, borderRadius: 8, maxWidth: '70%', color: 'black', alignSelf: msg.sender === "me" ? 'flex-end' : 'flex-start', background: msg.sender === "me" ? '#bfdbfe' : '#e5e7eb' }}>
+                                {msg.text}
+                            </div>
+                        ))}
+                    </div>
+
+                    <div style={{ display: 'flex', padding: 8, gap: 4, borderTop: '1px solid #e5e7eb' }}>
+                        <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => {
+                            if (e.key === "Enter") sendMessage();
+                        }} placeholder={`Message ${exampleUsers.find(u => u.id === selectedUser).name}...`} style={{ flex: 1, background: 'white', padding: 6, borderRadius: 8, color: 'black', border: '1px solid #ccc' }} />
+                        <button onClick={sendMessage} style={{ padding: 6, borderRadius: 8, background: '#2563eb', color: '#fff' }}>Send</button>
+                    </div>
                 </div>
             )}
         </div>
@@ -1024,4 +1264,3 @@ function App() {
 }
 
 export default App;
-
